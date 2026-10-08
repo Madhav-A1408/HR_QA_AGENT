@@ -9,3 +9,5 @@ wheels/
 
 # Virtual environments
 .venv
+chroma_policy_db/
+chroma_policy_db.hash
