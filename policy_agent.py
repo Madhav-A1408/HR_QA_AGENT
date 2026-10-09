@@ -124,10 +124,105 @@ def search_policy_docs(query:str,category:str = "") -> str:
     leave, work-arrangements, payroll, benefits, conduct, performance, exit.
     Leave category empty if unsure."""
 
+    # One call does three jobs inside Chroma:
+
+        # Turns the query into numbers using the embedding model (this is the one tiny OpenAI call per search).
+        # Compares those numbers with every saved section’s numbers.
+        # Returns the closest ones, each paired with a distance score.
+    
+    
+    if category:
+        category_filter = {"category":category}
+    else: 
+        category_filter = None    
+    
     results = vectorstore.similarity_search_with_score(
         query,
         k = cfg.TOP_K,
-        filter={"category":category} if category else None,
+        filter= category_filter,
     )
     
+    # Only runs when DEBUG_SEARCH = True. It prints what the AI searched for, then each result’s distance 
+    # (3 decimal places) and title. It runs before the cutoff, so you can see the matches that are about to 
+    # be dropped.
+    if cfg.DEBUG_SEARCH:
+        print(f"   [search] '{query}' (category = ''{category})")
+        for doc, score in results:
+            print(f"   {score:.3f} '{doc.metadata['title']}")
+
+        
+    # keep only close matches (lower distance = closer)
+    # This is a list comprehension, which is a one-line loop. In plain words: “go through every result, 
+    # and keep it only if its distance is at or below MAX_DISTANCE.”
+   
+    good= []
+   
+    for doc, score in results:
+                if score <= cfg.MAX_DISTANCE:
+                    good.append(doc)
+                    
+                if not good:
+                    return "No Matching Policy Found!"
+                
+    # Turn each matched policy into one text block: [Title] content (Source: ...)
+    # Values come from metadata (the clean original text), not the embedded page_content.
+    # The source is included so the agent can cite it, as AGENT_PROMPT rule 3 requires.
+    # Blocks are joined with a blank line and returned to the agent as a ToolMessage.
+        
+    lines = []
+    for i in good:
+        lines.append(
+            f"[{doc.metadata['title']}] {doc.metadata['content']} "
+            f"(Source: {doc.metadata['source']})"
+        )
+    return "\n\n".join(lines) 
+
+
+
+@tool
+def check_employee_record(field:str, config:RunnableConfig, employee_id: str = "") -> str:
+
+    """Look up ONE field from the asking employee's own record.
+    If you do not know the employee's ID yet, do not guess: call Question to
+    ask for it (employee IDs are numbers like 384), then pass it as employee_id.
+    Valid fields: Employee Name, Dept, Work Location, Designation, Level,
+    Gender, Employment Type, Employment Status, Date of Joining,
+    Reporting Manager, Casual Leave Balance (Days),
+    Sick Leave Balance (Days), Earned Leave Balance (Days).
+    """
+    supplied_id = config["configurable"].get("employee_id")
+
+    if supplied_id:
+        employee_id = supplied_id
+    
+    if not employee_id:
+        return "Employee ID not known. Call Question tool to ask the employee for thier Employee ID"     
+    
+    record = cfg.EMPLOYEE_RECORDS.get(str(employee_id).strip(),{})
+    
+    if not record:
+        return(
+            f"No employee found with ID '{employee_id}' . "
+            "Call Question tool to ask the employees to re-check their Employee ID."
+        ) 
+        
+    if field not in record:
+        return f"No field '{field}'. Valid fields: {', '.join(record)}"
+    
+    return str(record[field])
+
+
+@tool("Question")
+def question(content:str) -> str:
+    """
+    Ask the employee ONE short clarifying question when you cannot answer
+    without more information (e.g. 'Which type of leave do you mean?' or
+    'What is your employee ID?').
+    
+    """
+    
+    return "Question sent to employee." 
+
+       
+                    
     
