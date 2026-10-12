@@ -223,6 +223,202 @@ def question(content:str) -> str:
     
     return "Question sent to employee." 
 
-       
-                    
+
+
+@tool("Done")
+def done(answer:str) -> str:
+    """
+    Call this when you are finished. Put the final reply for the employee
+    in 'answer'. If you cannot answer safely, the answer should tell them
+    to contact HR.
     
+    """
+    
+    return "Answer sent to Employee." 
+
+
+# A list of all four tools for the AI, plus a lookup dictionary keyed by tool name.
+tools = [search_policy_docs,check_employee_record,question,done]
+
+tools_by_name = {}
+for t in tools:
+    tools_by_name[t.name] = t
+
+
+
+# ---------------------------------------------------------------
+# 6. TRIAGE ROUTER 
+#    WHAT: decides if a message is an HR/policy question ("answer")
+#          or off-topic ("ignore").
+#    HOW: one LLM call that must reply in a fixed shape (RouterSchema),
+#         so the answer is always exactly "answer" or "ignore".
+# ---------------------------------------------------------------
+
+# Setting the shape of router's reply.
+class RouterSchema(BaseModel):
+    reasoning:str = Field(description="One or two sentences of Reasoning")
+    classification:Literal["ignore", "answer"] = Field(description="'ignore' if NOT a company policy/HR question,"
+                                                       "'answer' if it is ")   
+    
+        
+# Wrapping the LLM with the RouterSchema shape so its reply always matches this format.
+
+router_llm =llm.with_structured_output(RouterSchema)
+
+# Triage Router instructions
+TRIAGE_PROMPT = """You are the first filter for a company Policy/HR assistant.
+- 'answer': questions about company policy, leave, benefits, work-from-home,
+  notice periods, payroll, conduct/harassment, or the employee's own HR data
+  (like leave balance).
+- 'ignore': anything else (jokes, weather, coding help, random chat).
+
+Examples:
+- "Can I quit tomorrow?" -> answer
+- "My manager harassed me, what do I do?" -> answer
+- "How many sick days do I have left?" -> answer
+- "What's a good laptop for coding?" -> ignore
+- "Tell me a joke" -> ignore
+
+If the latest message answers a clarifying question the assistant just asked
+(for example an employee ID or 'confirmed'), choose 'answer'.
+If unsure, choose 'answer'. It is safer to let the response agent say
+"contact HR" than to turn away a real HR question."""
+
+
+def triage_router(state:State) -> Command[Literal["response_agent","__end__"]]:
+     # Step 1: read the last few messages (not just the latest), so a short reply
+    
+    
+    #Builds a mini script from the last 4 messages. It keeps only human and AI messages that have real text,
+    # which drops tool results and the AI’s silent tool calls.
+    recent_messages = state["messages"][-4:]
+    lines = []
+    for m in recent_messages:
+        if m.type in ("human","ai") and m.content:
+            lines.append(f"{m.type}:{m.content}")
+            
+    transcript = "\n".join(lines)
+    
+    
+    
+    #  Sends the instruction sheet and the mini script to the classifier.    
+    result = router_llm.invoke(
+        [SystemMessage(content = TRIAGE_PROMPT), HumanMessage(content = transcript)]
+        
+    )
+    
+    
+    # answer: record the verdict, clear final_answer (so a leftover can’t end the loop too early), 
+    # and go to the agent.
+    # ignore: record the verdict, set the polite canned reply from config, and end.
+    
+    if result.classification == "answer":
+        return Command(
+            goto="response_agent",
+            update = {"classification_decision":"answer","final_answer":""},
+        )
+        
+    return Command(
+        goto=END,
+        update = {"classification_decision":"ignore","final_answer":cfg.IGNORE_REPLY},
+    )
+    
+
+
+# ---------------------------------------------------------------
+# 7. RESPONSE AGENT 
+#    WHAT: loops "LLM picks a tool -> tool runs -> LLM sees the result"
+#          until it calls Done or Question.
+# ---------------------------------------------------------------
+
+# The agent's instructions. Rules 1-7 control how it behaves.
+AGENT_PROMPT = """You are a Policy/HR assistant for employees.
+Tools:
+- search_policy_docs: find company policy text.
+- check_employee_record: look up the asking employee's own data (designation,
+  employment status, gender, joining date, manager, leave balances, etc.).
+  It needs the employee's ID.
+- Question: ask the employee ONE short clarifying question.
+- Done: send the final reply.
+
+Rules:
+1. Use search_policy_docs for any policy fact. Never answer policy facts from memory.
+2. Use check_employee_record only for the asker's own data.
+3. Base answers only on tool results. End every policy answer with the source
+   exactly as given, in this form: (Source: HR Policy Handbook, Section 7.1)
+4. If the tools don't give a clear answer, or the question needs a judgment or
+   exception, call Done with a reply telling the employee to contact HR.
+5. If the answer depends on a detail you don't have (for example which leave
+   type), first try check_employee_record. If it still isn't known, call
+   Question with ONE short question. Never guess.
+6. check_employee_record needs the employee's ID. If you don't know it, or the
+   tool says it is not known or not found, call Question to ask for it. If the
+   employee already gave their ID earlier in this conversation, reuse it and
+   do not ask again. Pass it as employee_id. Never invent an ID.
+7. Always finish by calling Done or Question."""   
+
+
+#Hands the four tools to the AI. tool_choice="required" means it must call a tool every turn and can’t just chat. 
+# So the only way to finish is Done or Question.    
+
+llm_with_tools = llm.bind_tools(tools,tool_choice="required")
+
+
+# --- Node: llm_call -------------------------------------------------
+# WHAT: shows the LLM the instructions + conversation so far, and lets it
+#       choose the next tool.
+
+def llm_call(state:State):
+    response = llm_with_tools.invoke(
+        [SystemMessage(content=AGENT_PROMPT)+state["messages"]]
+    )
+    return {"messages":[response]}
+
+
+
+
+# --- Node: tool_node ------------------------------------------------
+# WHAT: runs the tool(s) the LLM just chose and records the results.
+# SPECIAL: if the tool was Done or Question, its text becomes final_answer
+#          (the reply to the employee).
+
+
+def tool_node(state:State, config : RunnableConfig):
+    results = []
+    final_answer = None
+    
+    last_message = state["messages"][-1] # the LLM's latest message holds its tool choice(s)
+    for call in last_message.tool_calls:
+        tools_to_run = tools_by_name[call["name"]]
+        observation = tools_to_run[call["args"],config]  # actually run the tool
+        results.append(
+            ToolMessage(content = observation, tool_call_id =call["id"], name = call["name"] )
+        )
+        if call["name"] == "Done":
+            final_answer = call["args"]["answer"]
+        elif call["name"] == "Question":
+            final_answer = call["args"]["answer"]
+    
+    update = {"messages":results}
+    if final_answer:
+        update ["final_answer"] = final_answer  
+    return update
+
+
+
+# --- Decision: should_continue --------------------------------------
+# WHAT: after each tool run, decide: finish, or loop back to the LLM?
+
+def should_continue(state:State) -> Literal["llm_call","__end__"]:
+    if state.get("final_answer"): # Done or Question was called -> the reply is ready
+        return END
+    return "llm_call"  # otherwise let the LLM see the tool result and continue
+
+
+
+
+        
+            
+    
+    
+     
