@@ -27,7 +27,7 @@ import config as cfg
 # 1. Initializing LLM Model + Data (via config.py)
 # ---------------------------------------------------------------
 
-llm = init_chat_model("openai:gpt-5-nano")
+llm = init_chat_model(cfg.MODEL_NAME)
 
 
 # Data: policy documents loaded from JSON into a list the search tool reads.
@@ -52,7 +52,7 @@ def build_vectorstore() -> Chroma:
     
     if path.exists() and hash_file.exists() and hash_file.read_text() == current_hash:
         return Chroma(
-            collection_name="policy_corpus",
+            collection_name="policy_docs",
             persist_directory=str(path),
             embedding_function= embeddings,
         )
@@ -146,9 +146,9 @@ def search_policy_docs(query:str,category:str = "") -> str:
     # (3 decimal places) and title. It runs before the cutoff, so you can see the matches that are about to 
     # be dropped.
     if cfg.DEBUG_SEARCH:
-        print(f"   [search] '{query}' (category = ''{category})")
+        print(f"   [search] '{query}' (category='{category}')")
         for doc, score in results:
-            print(f"   {score:.3f} '{doc.metadata['title']}")
+            print(f"   {score:.3f} {doc.metadata['title']}")
 
         
     # keep only close matches (lower distance = closer)
@@ -158,11 +158,11 @@ def search_policy_docs(query:str,category:str = "") -> str:
     good= []
    
     for doc, score in results:
-                if score <= cfg.MAX_DISTANCE:
-                    good.append(doc)
+        if score <= cfg.MAX_DISTANCE:
+            good.append(doc)
                     
-                if not good:
-                    return "No Matching Policy Found!"
+    if not good:
+        return "No Matching Policy Found!"
                 
     # Turn each matched policy into one text block: [Title] content (Source: ...)
     # Values come from metadata (the clean original text), not the embedded page_content.
@@ -170,13 +170,15 @@ def search_policy_docs(query:str,category:str = "") -> str:
     # Blocks are joined with a blank line and returned to the agent as a ToolMessage.
         
     lines = []
-    for i in good:
+    for doc in good:
         lines.append(
             f"[{doc.metadata['title']}] {doc.metadata['content']} "
             f"(Source: {doc.metadata['source']})"
         )
-    return "\n\n".join(lines) 
-
+    return(
+        "\n\n".join(lines)
+        + "\n\nIf this answers the question, call Done now with the answer and its source."
+    )
 
 
 @tool
@@ -184,7 +186,7 @@ def check_employee_record(field:str, config:RunnableConfig, employee_id: str = "
 
     """Look up ONE field from the asking employee's own record.
     If you do not know the employee's ID yet, do not guess: call Question to
-    ask for it (employee IDs are numbers like 384), then pass it as employee_id.
+    ask for it, then pass the exact ID the employee typed as employee_id.
     Valid fields: Employee Name, Dept, Work Location, Designation, Level,
     Gender, Employment Type, Employment Status, Date of Joining,
     Reporting Manager, Casual Leave Balance (Days),
@@ -216,9 +218,8 @@ def check_employee_record(field:str, config:RunnableConfig, employee_id: str = "
 def question(content:str) -> str:
     """
     Ask the employee ONE short clarifying question when you cannot answer
-    without more information (e.g. 'Which type of leave do you mean?' or
-    'What is your employee ID?').
-    
+    without more information (e.g. 'Which type of leave do you mean?').
+    Do not ask for the employee ID unless a personal question needs their record.
     """
     
     return "Question sent to employee." 
@@ -348,13 +349,24 @@ Rules:
    exactly as given, in this form: (Source: HR Policy Handbook, Section 7.1)
 4. If the tools don't give a clear answer, or the question needs a judgment or
    exception, call Done with a reply telling the employee to contact HR.
-5. If the answer depends on a detail you don't have (for example which leave
-   type), first try check_employee_record. If it still isn't known, call
-   Question with ONE short question. Never guess.
-6. check_employee_record needs the employee's ID. If you don't know it, or the
-   tool says it is not known or not found, call Question to ask for it. If the
-   employee already gave their ID earlier in this conversation, reuse it and
-   do not ask again. Pass it as employee_id. Never invent an ID.
+5. GENERAL vs PERSONAL questions:
+   - A GENERAL question asks what the policy says for employees in general
+     ("How many sick leave days do we get?", "When is salary credited?",
+     "What's the notice period here?"). Answer it from search_policy_docs
+     alone. Do NOT ask for the employee ID.
+   - A PERSONAL question asks about the asker's own data or situation
+     ("How many leave days do I have LEFT?", "What is MY notice period?",
+     "Can I work from home?"). Only these need check_employee_record.
+   - If you are not sure which it is, treat it as GENERAL: answer for everyone,
+     then add one line: "If you share your employee ID, I can tell you which
+     applies to you."
+   - If a general answer differs by group (for example probation vs confirmed),
+     give all the parts instead of asking who they are.
+   - Always call search_policy_docs before calling Question.
+6. check_employee_record needs the employee's ID. Ask for it with Question only
+   when a PERSONAL question needs the record. If the employee already gave their
+   ID earlier in this conversation, reuse it and do not ask again. Pass it as
+   employee_id. Never invent an ID.
 7. Always finish by calling Done or Question."""   
 
 
@@ -370,7 +382,7 @@ llm_with_tools = llm.bind_tools(tools,tool_choice="required")
 
 def llm_call(state:State):
     response = llm_with_tools.invoke(
-        [SystemMessage(content=AGENT_PROMPT)+state["messages"]]
+        [SystemMessage(content=AGENT_PROMPT)]+state["messages"]
     )
     return {"messages":[response]}
 
@@ -390,14 +402,14 @@ def tool_node(state:State, config : RunnableConfig):
     last_message = state["messages"][-1] # the LLM's latest message holds its tool choice(s)
     for call in last_message.tool_calls:
         tools_to_run = tools_by_name[call["name"]]
-        observation = tools_to_run[call["args"],config]  # actually run the tool
+        observation = tools_to_run.invoke(call["args"],config)  # actually run the tool
         results.append(
             ToolMessage(content = observation, tool_call_id =call["id"], name = call["name"] )
         )
         if call["name"] == "Done":
             final_answer = call["args"]["answer"]
         elif call["name"] == "Question":
-            final_answer = call["args"]["answer"]
+            final_answer = call["args"]["content"]
     
     update = {"messages":results}
     if final_answer:
@@ -416,9 +428,59 @@ def should_continue(state:State) -> Literal["llm_call","__end__"]:
 
 
 
+# --- Wire the response agent together -------------------------------
+# llm_call -> tool_node -> (should_continue) -> back to llm_call, or END
 
-        
+agent_builder = StateGraph(State)
+agent_builder.add_node("llm_call", llm_call)
+agent_builder.add_node("tool_node", tool_node)     
+agent_builder.add_edge(START,"llm_call")   
+agent_builder.add_edge("llm_call","tool_node")
+agent_builder.add_conditional_edges(
+    "tool_node", should_continue, {"llm_call":"llm_call", END:END}
+)
+response_agent = agent_builder.compile()
             
+
+# ---------------------------------------------------------------
+# 8. FULL WORKFLOW
+#    WHAT: connects the two parts: triage_router -> response_agent.
+#    (The router chooses its next step itself, using Command(goto=...).)
+# ---------------------------------------------------------------
+
+workflow_builder = StateGraph(State)
+workflow_builder.add_node("triage_router", triage_router) 
+workflow_builder.add_node("response_agent", response_agent)
+workflow_builder.add_edge(START, "triage_router")
+workflow = workflow_builder.compile()
+
+
+# ---------------------------------------------------------------
+# 9. ask()  -  the ONE function other files call (chat.py, future test files)
+#    IN:  question     = what the employee typed
+#         employee_id  = optional; if empty, the agent asks for it
+#         history      = earlier HumanMessage/AIMessage list, so follow-ups
+#                        work and an ID typed earlier is remembered
+#    OUT: the reply text to show the employee
+# ---------------------------------------------------------------
+
+def ask(question:str, employee_id : str = "", history = None) -> str:
+   
+   
+   #If no history was passed, start with an empty list. The new question goes at the end.
+    if history is None:
+        history = []
+        
+    messages = history + [HumanMessage(content=question)]
     
     
-     
+    result = workflow.invoke(
+        {"messages" : messages, "employee_id" : employee_id},
+        config = {
+            "configurable": {"employee_id" : employee_id},
+            "recursion_limit" : cfg.RECURSION_LIMIT,
+        }
+    )
+    
+    return result["final_answer"]
+

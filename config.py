@@ -18,7 +18,7 @@ CHROMA_PATH = BASE_DIR / "chroma_data"
 
 # ---------- Model settings ----------
 
-MODEL_NAME = "gpt-5-nano"
+MODEL_NAME = "gpt-5.4-nano"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 
@@ -26,6 +26,7 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 TOP_K = 2                  # how many policies search_policy_docs returns at most
 MAX_DISTANCE = 0.7         # cosine distance cutoff: lower = stricter (a starting guess, tune it)
 DEBUG_SEARCH = True        # prints each search's distances to the console; turn off when tuned
+# MAX_SEARCHES = 3           # after this many searches in one question, the agent must answer
 
 
 
