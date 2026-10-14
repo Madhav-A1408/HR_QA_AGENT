@@ -4,6 +4,9 @@ load_dotenv()
 import json
 import hashlib
 import shutil
+import re
+
+import random
 from typing import Literal
 from pydantic import BaseModel, Field
 from pathlib import Path
@@ -18,6 +21,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from langgraph.graph import StateGraph,MessagesState,START,END
 from langgraph.types import Command
+from langgraph.errors import GraphRecursionError
 
 import config as cfg
 
@@ -107,6 +111,7 @@ vectorstore = build_vectorstore()
 class State(MessagesState):
     employee_id : str
     classification_decision : Literal["ignore","answer"]
+    question_type : Literal["general","personal"]
     final_answer : str
     
 
@@ -211,7 +216,7 @@ def check_employee_record(field:str, config:RunnableConfig, employee_id: str = "
     if field not in record:
         return f"No field '{field}'. Valid fields: {', '.join(record)}"
     
-    return str(record[field])
+    return f"{record[field]} (Source: Employee Record, ID {employee_id})"
 
 
 @tool("Question")
@@ -259,18 +264,23 @@ for t in tools:
 class RouterSchema(BaseModel):
     reasoning:str = Field(description="One or two sentences of Reasoning")
     classification:Literal["ignore", "answer"] = Field(description="'ignore' if NOT a company policy/HR question,"
-                                                       "'answer' if it is ")   
-    
+                                                       "'answer' if it is ")
+    question_type:Literal["general", "personal"] = Field(
+        description="'personal' if the asker wants to know what applies to THEM "
+                    "(uses I, my or me: 'Can I...', 'Am I eligible...', 'my leave balance'). "
+                    "'general' if it asks what the policy says for everyone."
+    )   
         
 # Wrapping the LLM with the RouterSchema shape so its reply always matches this format.
 
 router_llm =llm.with_structured_output(RouterSchema)
 
 # Triage Router instructions
-TRIAGE_PROMPT = """You are the first filter for a company Policy/HR assistant.
+TRIAGE_PROMPT = f"""You are the first filter for {cfg.BOT_NAME}, the HR assistant at {cfg.COMPANY_NAME}.
 - 'answer': questions about company policy, leave, benefits, work-from-home,
   notice periods, payroll, conduct/harassment, or the employee's own HR data
-  (like leave balance).
+  (like leave balance). ALSO 'answer' any question about the assistant itself:
+  who it is, its name, what it can do, or a request to introduce itself.    
 - 'ignore': anything else (jokes, weather, coding help, random chat).
 
 Examples:
@@ -281,7 +291,7 @@ Examples:
 - "Tell me a joke" -> ignore
 
 If the latest message answers a clarifying question the assistant just asked
-(for example an employee ID or 'confirmed'), choose 'answer'.
+(for example an employee ID or 'permanent'), choose 'answer'.
 If unsure, choose 'answer'. It is safer to let the response agent say
 "contact HR" than to turn away a real HR question."""
 
@@ -316,12 +326,14 @@ def triage_router(state:State) -> Command[Literal["response_agent","__end__"]]:
     if result.classification == "answer":
         return Command(
             goto="response_agent",
-            update = {"classification_decision":"answer","final_answer":""},
+            update = {"classification_decision":"answer","final_answer":"",\
+                        "question_type":result.question_type,
+            }
         )
         
     return Command(
         goto=END,
-        update = {"classification_decision":"ignore","final_answer":cfg.IGNORE_REPLY},
+        update = {"classification_decision":"ignore","final_answer":random.choice(cfg.IGNORE_REPLIES)},
     )
     
 
@@ -333,7 +345,10 @@ def triage_router(state:State) -> Command[Literal["response_agent","__end__"]]:
 # ---------------------------------------------------------------
 
 # The agent's instructions. Rules 1-7 control how it behaves.
-AGENT_PROMPT = """You are a Policy/HR assistant for employees.
+AGENT_PROMPT = (
+    f"You are {cfg.BOT_NAME}, the HR assistant for employees of {cfg.COMPANY_NAME}.\n"
+    "If asked who you are, introduce yourself by that name.\n"
+) + """
 Tools:
 - search_policy_docs: find company policy text.
 - check_employee_record: look up the asking employee's own data (designation,
@@ -344,9 +359,13 @@ Tools:
 
 Rules:
 1. Use search_policy_docs for any policy fact. Never answer policy facts from memory.
-2. Use check_employee_record only for the asker's own data.
-3. Base answers only on tool results. End every policy answer with the source
-   exactly as given, in this form: (Source: HR Policy Handbook, Section 7.1)
+2. Use check_employee_record only for the asker's own data. If what the
+   employee says about themselves differs from their record, go by the record.
+3. Base answers only on tool results, and cite where each fact came from,
+   copying the source exactly as the tool gave it:
+   - Policy facts: HR Policy Handbook, Section X.Y
+   - The employee's own data: Employee Record
+   Never invent a section number.
 4. If the tools don't give a clear answer, or the question needs a judgment or
    exception, call Done with a reply telling the employee to contact HR.
 5. GENERAL vs PERSONAL questions:
@@ -354,20 +373,45 @@ Rules:
      ("How many sick leave days do we get?", "When is salary credited?",
      "What's the notice period here?"). Answer it from search_policy_docs
      alone. Do NOT ask for the employee ID.
-   - A PERSONAL question asks about the asker's own data or situation
-     ("How many leave days do I have LEFT?", "What is MY notice period?",
-     "Can I work from home?"). Only these need check_employee_record.
-   - If you are not sure which it is, treat it as GENERAL: answer for everyone,
-     then add one line: "If you share your employee ID, I can tell you which
+   - A PERSONAL question is about the asker themselves: it uses "I", "my" or
+     "me" and asks what applies to them, what they can do, or what they have
+     ("Can I work from home 2 days a week?", "Am I eligible for ...?",
+     "What is MY notice period?", "How many leave days do I have LEFT?").
+     For these, search the policy, then check_employee_record (asking for the
+     ID if needed), and answer for that employee only.
+   - If the policy has conditions about who it applies to (probation, intern,
+     gender, etc.), never answer a personal question with a plain "Yes" or "No"
+     before checking the employee's record.
+   - Only if the wording is truly unclear (no "I", "my" or "me"), treat it as
+     GENERAL and add: "If you share your employee ID, I can tell you which
      applies to you."
-   - If a general answer differs by group (for example probation vs confirmed),
+   - If a general answer differs by group (for example probation vs permanent),
      give all the parts instead of asking who they are.
    - Always call search_policy_docs before calling Question.
 6. check_employee_record needs the employee's ID. Ask for it with Question only
    when a PERSONAL question needs the record. If the employee already gave their
    ID earlier in this conversation, reuse it and do not ask again. Pass it as
    employee_id. Never invent an ID.
-7. Always finish by calling Done or Question."""   
+   Never ask the employee about something stored in their record (status,
+   employment type, gender, joining date, balances); ask for their employee ID
+   instead and look it up.
+7. How to write the reply:
+   - For a PERSONAL question, start with the direct answer for that employee
+     (for example "No, you're not eligible for regular work from home."), then
+     give the reason in one or two short sentences.
+   - EXCEPTIONS: if the employee asks for something the policy says needs
+     approval or is "not automatic" (waivers, early release, special cases),
+     do NOT start with Yes or No. Say it isn't automatic, say who approves it,
+     and tell them to contact HR.
+   - Once you have the employee's record, state only the value that applies to
+     them (for example "Your notice period is 60 days"), not every group's value.
+   - Only mention conditions that apply to this employee; skip ones that don't.
+   - Keep it short. Don't repeat the full policy text.
+   - Write in plain text, without Markdown symbols like ** or #.
+   - Put all sources together once, at the very end, in one line:
+     (Source: HR Policy Handbook, Section X.Y; Employee Record)
+     Leave out "Employee Record" if you didn't use it.
+8. Always finish by calling Done or Question."""
 
 
 #Hands the four tools to the AI. tool_choice="required" means it must call a tool every turn and can’t just chat. 
@@ -398,23 +442,63 @@ def llm_call(state:State):
 def tool_node(state:State, config : RunnableConfig):
     results = []
     final_answer = None
-    
+
+    # Has the record been checked yet for this question?
+    # (only this run's tool results are in state; chat history holds just text)
+    record_checked = False
+    for m in state["messages"]:
+        if m.type == "tool" and m.name == "check_employee_record":
+            record_checked = True
+
+    # Everything the employee has typed: used for the two checks below
+    latest_question = ""
+    typed_numbers = []
+    for m in state["messages"]:
+        if m.type == "human":
+            latest_question = m.content
+            typed_numbers += re.findall(r"\d+", m.content)   # every number they typed
+
+    # Personal if the router said so, OR the latest message uses I / my / me / mine
+    # (\b means "whole word", so words like "item" don't count by accident)
+    mentions_self = re.search(r"\b(i|my|me|mine)\b", latest_question.lower())
+    is_personal = state.get("question_type") == "personal" or mentions_self is not None
+
     last_message = state["messages"][-1] # the LLM's latest message holds its tool choice(s)
     for call in last_message.tool_calls:
-        tools_to_run = tools_by_name[call["name"]]
-        observation = tools_to_run.invoke(call["args"],config)  # actually run the tool
+
+        given_id = str(call["args"].get("employee_id", "")).strip()
+
+        if call["name"] == "check_employee_record" and given_id not in typed_numbers:
+            # FIX 1: block lookups with an ID the employee never typed (or no ID at all)
+            observation = (
+                "Blocked: the employee has not given this ID. "
+                "Call Question to ask the employee for their employee ID."
+            )
+        elif call["name"] == "Done" and is_personal and not record_checked:
+            # FIX 2: personal question answered without looking at the employee: block it
+            observation = (
+                "Not allowed yet: this is a personal question. Check the employee's "
+                "record first with check_employee_record. If you don't know their "
+                "employee ID, call Question to ask for it."
+            )
+        else:
+            tools_to_run = tools_by_name[call["name"]]
+            observation = tools_to_run.invoke(call["args"],config)  # actually run the tool
+            if call["name"] == "check_employee_record":
+                record_checked = True
+            elif call["name"] == "Done":
+                final_answer = call["args"]["answer"]
+            elif call["name"] == "Question":
+                final_answer = call["args"]["content"]
+
         results.append(
             ToolMessage(content = observation, tool_call_id =call["id"], name = call["name"] )
         )
-        if call["name"] == "Done":
-            final_answer = call["args"]["answer"]
-        elif call["name"] == "Question":
-            final_answer = call["args"]["content"]
-    
+
     update = {"messages":results}
     if final_answer:
-        update ["final_answer"] = final_answer  
-    return update
+        update ["final_answer"] = final_answer
+    return update   
 
 
 

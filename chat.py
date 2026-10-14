@@ -5,16 +5,19 @@
 # The thinking all happens in policy_agent.py.
 # =====================================================================
 
+import config
+import random
 from policy_agent import ask
 from langchain_core.messages import AIMessage,HumanMessage
 
 
 def main():
-    print("\nHi! Ask me a policy/HR question (type 'exit' to quit).\n")
+    
+    print(f"\n{random.choice(config.GREETINGS)}\n")
     
     # history = the conversation so far (your messages + the agent's replies).
     # It is what lets the agent remember an employee ID you typed earlier,
-    # and understand a short reply like "384" or "confirmed".
+    # and understand a short reply like "384" or "permanent".
     
     history = []
     
@@ -26,10 +29,17 @@ def main():
         # '.strip()' -- removes spaces at the start and end, so " hello " becomes "hello".
         
         
-        if question.lower() in {"quit", "exit"}:
+        
+        cleaned = question.lower().strip("!.?, ")
+        cleaned = " ".join(cleaned.split())
+
+        if cleaned in config.EXIT_WORDS:   # leave the chat   # leave the chat
+            print(f"{config.BOT_NAME}: {random.choice(config.GOODBYES)}\n")
             break
-        #.lower() makes it case-insensitive, so Exit, EXIT and quit all work. 
-        # break leaves the loop, so the program ends.
+        # Clean the input before checking for exit words:
+                #   .lower()       -> "Bye", "BYE" and "bYe" all become "bye"
+                #   .strip("!.?,") -> removes punctuation at the ends, so "bye!" becomes "bye"
+                #   split + join   -> collapses extra spaces, so "thank   you" becomes "thank you"
         
         
         if question == "":  # ignore empty Enter presses
@@ -43,7 +53,8 @@ def main():
         
         history.append(HumanMessage(content=question))
         history.append(AIMessage(content = answer))
-        print(f"Agent: {answer}\n")
+        
+        print(f"{config.BOT_NAME}: {answer}\n")
         
 if __name__ == "__main__":
         main()

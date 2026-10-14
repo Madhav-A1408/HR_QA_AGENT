@@ -16,6 +16,13 @@ EMPLOYEES_PATH = DATA_DIR / "employee_records.json"
 CHROMA_PATH = BASE_DIR / "chroma_data"
 
 
+
+# ---------- Chatbot identity ----------
+BOT_NAME = "Sparc"
+COMPANY_NAME = "Experion Technologies"
+
+
+
 # ---------- Model settings ----------
 
 MODEL_NAME = "gpt-5.4-nano"
@@ -32,7 +39,37 @@ DEBUG_SEARCH = True        # prints each search's distances to the console; turn
 
 # ---------- Agent settings ----------
 RECURSION_LIMIT = 15            # safety cap on the LLM <-> tools loop
-IGNORE_REPLY = "Sorry, I can only help with company policy and HR questions."
+
+IGNORE_REPLIES = [
+            "Sorry, I can only help with HR-related queries.",
+            "That's outside what I can help with. Feel free to ask me any HR-related question.",
+            "I'm only able to answer HR-related queries. Is there anything HR-related I can help with?",
+]
+
+
+GREETINGS = [
+            f"Hello! I'm {BOT_NAME}, your HR assistant at {COMPANY_NAME}. How can I help you today?",
+            f"Hi there! {BOT_NAME} here. Got an HR question? I'm happy to help.",
+            f"Welcome to {BOT_NAME}, {COMPANY_NAME}'s HR assistant! What would you like to know?",
+            f"Hey! I'm {BOT_NAME}. Ask me anything about HR at {COMPANY_NAME}.",
+            f"Good to see you! I'm {BOT_NAME}. What HR query can I help you with today?",
+]
+
+
+GOODBYES = [
+            f"Goodbye! If you have any HR-related doubts, {BOT_NAME} is always here to help.",
+            f"Thanks for chatting with {BOT_NAME}! Reach out anytime you have an HR question.",
+            "Take care! Come back anytime you need help with HR matters.",
+            f"Glad I could help. Have a great day at {COMPANY_NAME}!",
+            f"Bye for now! {BOT_NAME} will be here whenever you have an HR query.",
+]
+
+
+EXIT_WORDS = {
+    "exit", "quit", "bye", "goodbye", "bye bye",
+    "thanks", "thank you", "thankyou",
+    "thanks bye", "thank you bye", "ok bye",
+}
 
 
 # ---------- Employee records, loaded from the JSON file ----------
