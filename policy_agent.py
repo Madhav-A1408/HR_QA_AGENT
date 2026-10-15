@@ -136,10 +136,10 @@ def search_policy_docs(query:str,category:str = "") -> str:
         # Returns the closest ones, each paired with a distance score.
     
     
-    if category:
-        category_filter = {"category":category}
-    else: 
-        category_filter = None    
+        # Always search every policy. With only ~20 policies, vector search finds the
+    # right one by meaning; a wrongly guessed category would hide it completely
+    # (e.g. "hospital" searched under 'leave' never finds Health Insurance in 'benefits').
+    category_filter = None
     
     results = vectorstore.similarity_search_with_score(
         query,
@@ -159,11 +159,19 @@ def search_policy_docs(query:str,category:str = "") -> str:
     # keep only close matches (lower distance = closer)
     # This is a list comprehension, which is a one-line loop. In plain words: “go through every result, 
     # and keep it only if its distance is at or below MAX_DISTANCE.”
-   
-    good= []
-   
+    
+    
+    # The best (lowest) distance among the results
+    best_score = None
     for doc, score in results:
-        if score <= cfg.MAX_DISTANCE:
+        if best_score is None or score < best_score:
+            best_score = score
+
+    # Keep a result only if it is close enough overall (MAX_DISTANCE)
+    # AND nearly as good as the best match (RELATIVE_GAP)
+    good = []
+    for doc, score in results:
+        if score <= cfg.MAX_DISTANCE and score <= best_score + cfg.RELATIVE_GAP:
             good.append(doc)
                     
     if not good:
@@ -216,7 +224,16 @@ def check_employee_record(field:str, config:RunnableConfig, employee_id: str = "
     if field not in record:
         return f"No field '{field}'. Valid fields: {', '.join(record)}"
     
-    return f"{record[field]} (Source: Employee Record, ID {employee_id})"
+    
+    # if cfg.DEBUG_SEARCH:
+    #     print(f"   [record] id={employee_id} {field} = {record[field]}")
+        
+    return (
+        f"{field} = {record[field]} (Source: Employee Record, ID {employee_id}). "
+        f"Answer only for an employee with {field} = {record[field]}; "
+        "do not describe the rules for other groups."
+    )
+
 
 
 @tool("Question")
@@ -227,7 +244,10 @@ def question(content:str) -> str:
     Do not ask for the employee ID unless a personal question needs their record.
     """
     
+    
     return "Question sent to employee." 
+    
+    
 
 
 
@@ -266,10 +286,17 @@ class RouterSchema(BaseModel):
     classification:Literal["ignore", "answer"] = Field(description="'ignore' if NOT a company policy/HR question,"
                                                        "'answer' if it is ")
     question_type:Literal["general", "personal"] = Field(
-        description="'personal' if the asker wants to know what applies to THEM "
-                    "(uses I, my or me: 'Can I...', 'Am I eligible...', 'my leave balance'). "
-                    "'general' if it asks what the policy says for everyone."
-    )   
+        description=(
+            "'personal' ONLY if the answer could depend on the asker's own employee "
+            "record: employment status or type (probation, permanent, intern), gender, "
+            "joining date, department, location, designation, manager, or leave balances. "
+            "Examples: 'Can I work from home?', 'What is my notice period?', "
+            "'How many leave days do I have left?', 'How much maternity leave do I get?'. "
+            "'general' if the answer is the same for every employee, even when the "
+            "question says I or my. Examples: 'How much can I claim for a certification "
+            "course?', 'When is my salary credited?', 'When do I get my Form 16?'."
+        )
+    )
         
 # Wrapping the LLM with the RouterSchema shape so its reply always matches this format.
 
@@ -379,6 +406,14 @@ Rules:
      "What is MY notice period?", "How many leave days do I have LEFT?").
      For these, search the policy, then check_employee_record (asking for the
      ID if needed), and answer for that employee only.
+    - A question that says "I" or "my" but whose answer cannot depend on the
+     employee's record is GENERAL. The record only holds: name, department,
+     location, designation, level, gender, employment type and status, joining
+     date, manager, and leave balances. If none of these could change the
+     answer (for example claim limits, salary dates, holidays, tax deadlines),
+     answer directly without asking anything.
+   - Never ask the employee whether their question is general or personal.
+     Decide that yourself.
    - If the policy has conditions about who it applies to (probation, intern,
      gender, etc.), never answer a personal question with a plain "Yes" or "No"
      before checking the employee's record.
@@ -395,6 +430,14 @@ Rules:
    Never ask the employee about something stored in their record (status,
    employment type, gender, joining date, balances); ask for their employee ID
    instead and look it up.
+   Use these record fields instead of asking the employee:
+   - maternity vs paternity leave           -> Gender
+   - probation vs permanent rules           -> Employment Status
+     (notice period, work from home, etc.)
+   - intern rules                           -> Employment Type
+   - leave left / leave balance             -> the matching Leave Balance field
+   If the answer depends on one of these, ask for the employee ID, never for
+   the value itself (never ask "mother or father?", "are you on probation?").
 7. How to write the reply:
    - For a PERSONAL question, start with the direct answer for that employee
      (for example "No, you're not eligible for regular work from home."), then
@@ -443,63 +486,157 @@ def tool_node(state:State, config : RunnableConfig):
     results = []
     final_answer = None
 
-    # Has the record been checked yet for this question?
-    # (only this run's tool results are in state; chat history holds just text)
-    record_checked = False
+    # ---------------------------------------------------------------
+    # A. Which record fields were successfully read for this question?
+    #    (only this run's tool results are in state; chat history holds just text)
+    # ---------------------------------------------------------------
+
+    # Step 1: remember which field each check_employee_record call asked for
+    field_by_call_id = {}
+    for m in state["messages"]:
+        if m.type == "ai" and m.tool_calls:
+            for c in m.tool_calls:
+                if c["name"] == "check_employee_record":
+                    field_by_call_id[c["id"]] = c["args"].get("field", "")
+
+    # Step 2: keep only the lookups that actually returned a value
+    # (blocked or failed lookups don't count as "checked")
+    fields_checked = set()
+    failed_starts = ("Blocked", "Employee ID not known", "No employee found", "No field")
     for m in state["messages"]:
         if m.type == "tool" and m.name == "check_employee_record":
-            record_checked = True
+            if not m.content.startswith(failed_starts):
+                fields_checked.add(field_by_call_id.get(m.tool_call_id, ""))
 
-    # Everything the employee has typed: used for the two checks below
-    latest_question = ""
+    record_checked = len(fields_checked) > 0
+
+    # ---------------------------------------------------------------
+    # B. What the employee typed: the latest question, and every number
+    #    (used for the ID guard and the "asking about myself" check)
+    # ---------------------------------------------------------------
+        # Everything the employee typed, in order
+    human_messages = []
     typed_numbers = []
     for m in state["messages"]:
         if m.type == "human":
-            latest_question = m.content
+            human_messages.append(m.content)
             typed_numbers += re.findall(r"\d+", m.content)   # every number they typed
 
-    # Personal if the router said so, OR the latest message uses I / my / me / mine
-    # (\b means "whole word", so words like "item" don't count by accident)
-    mentions_self = re.search(r"\b(i|my|me|mine)\b", latest_question.lower())
-    is_personal = state.get("question_type") == "personal" or mentions_self is not None
+    # The last 3 things the employee typed, joined together.
+    # A short reply like "175" is usually answering the question just before it,
+    # so the original question ("How much leave do I get...") must still count.
+    recent_question_text = " ".join(human_messages[-3:])
 
-    last_message = state["messages"][-1] # the LLM's latest message holds its tool choice(s)
+    # ---------------------------------------------------------------
+    # C. Is this a personal question, and which record fields does it need?
+    # ---------------------------------------------------------------
+
+    # All policy text the agent has found for this question
+    policy_text = ""
+    for m in state["messages"]:
+        if m.type == "tool" and m.name == "search_policy_docs":
+            policy_text += m.content.lower()
+
+    # Does that policy have conditions about WHO it applies to?
+    has_conditions = False
+    for word in cfg.CONDITION_WORDS:
+        if re.search(r"\b" + word + r"\b", policy_text):
+            has_conditions = True
+
+    # Is the employee asking about themselves? (\b = whole word only)
+    mentions_self = re.search(r"\b(i|my|me|mine)\b", recent_question_text.lower())
+
+    # Personal if the router says so, OR they ask about themselves AND the
+    # policy depends on who they are
+    is_personal = (
+        state.get("question_type") == "personal"
+        or (mentions_self is not None and has_conditions)
+    )
+
+    # Which record fields this policy needs
+    # (e.g. "female"/"male" in the policy text -> Gender must be read)
+    fields_needed = set()
+    for word, field in cfg.REQUIRED_FIELDS.items():
+        if re.search(r"\b" + word + r"\b", policy_text):
+            fields_needed.add(field)
+
+    fields_missing = fields_needed - fields_checked
+
+    # ---------------------------------------------------------------
+    # D. Run (or block) each tool the LLM chose
+    # ---------------------------------------------------------------
+    last_message = state["messages"][-1]   # the LLM's latest message holds its tool choice(s)
     for call in last_message.tool_calls:
 
         given_id = str(call["args"].get("employee_id", "")).strip()
+        question_text = call["args"].get("content", "").lower()
+        asks_for_id = re.search(r"\bid\b", question_text) is not None
 
         if call["name"] == "check_employee_record" and given_id not in typed_numbers:
-            # FIX 1: block lookups with an ID the employee never typed (or no ID at all)
+            # GUARD 1: block lookups with an ID the employee never typed (or no ID at all)
             observation = (
                 "Blocked: the employee has not given this ID. "
                 "Call Question to ask the employee for their employee ID."
             )
+
+        elif call["name"] == "Question" and is_personal and fields_missing and not asks_for_id:
+            # GUARD 2: don't ask the employee for something their record holds
+            # (e.g. "maternity or paternity?", "are you on probation?")
+            observation = (
+                "Don't ask the employee about this: it is in their record. "
+                "Ask for their employee ID instead, then read these fields with "
+                "check_employee_record: " + ", ".join(sorted(fields_missing)) + "."
+            )
+
+        elif call["name"] == "Done" and is_personal and fields_missing:
+            # GUARD 3: don't answer until the field that decides the answer has been read
+            observation = (
+                "Not allowed yet: first read these fields with check_employee_record: "
+                + ", ".join(sorted(fields_missing))
+                + ". Go by the record, not by what the employee said."
+            )
+
         elif call["name"] == "Done" and is_personal and not record_checked:
-            # FIX 2: personal question answered without looking at the employee: block it
+            # GUARD 4: personal question answered without looking at the record at all
             observation = (
                 "Not allowed yet: this is a personal question. Check the employee's "
                 "record first with check_employee_record. If you don't know their "
                 "employee ID, call Question to ask for it."
             )
+
+        
+        elif (call["name"] == "Done" and is_personal and record_checked
+              and re.search(r"\bif you(?:'|’)?re\b|\bif you are\b",
+                            call["args"].get("answer", "").lower())):
+            # GUARD 5: record already read, but the answer still covers every group
+            observation = (
+                "Not allowed: you already have the employee's record. Give only the "
+                "one answer that applies to them, without 'if you are...' options. "
+                "Use the record values above."
+            )
         else:
             tools_to_run = tools_by_name[call["name"]]
-            observation = tools_to_run.invoke(call["args"],config)  # actually run the tool
+            observation = tools_to_run.invoke(call["args"], config)   # actually run the tool
+
             if call["name"] == "check_employee_record":
-                record_checked = True
+                # count it only if it returned a value
+                if not str(observation).startswith(failed_starts):
+                    fields_checked.add(call["args"].get("field", ""))
+                    record_checked = True
+                    fields_missing = fields_needed - fields_checked
             elif call["name"] == "Done":
                 final_answer = call["args"]["answer"]
             elif call["name"] == "Question":
                 final_answer = call["args"]["content"]
 
         results.append(
-            ToolMessage(content = observation, tool_call_id =call["id"], name = call["name"] )
+            ToolMessage(content = observation, tool_call_id = call["id"], name = call["name"])
         )
 
-    update = {"messages":results}
+    update = {"messages": results}
     if final_answer:
-        update ["final_answer"] = final_answer
-    return update   
-
+        update["final_answer"] = final_answer
+    return update
 
 
 # --- Decision: should_continue --------------------------------------

@@ -33,8 +33,22 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 TOP_K = 2                  # how many policies search_policy_docs returns at most
 MAX_DISTANCE = 0.7         # cosine distance cutoff: lower = stricter (a starting guess, tune it)
 DEBUG_SEARCH = True        # prints each search's distances to the console; turn off when tuned
-# MAX_SEARCHES = 3           # after this many searches in one question, the agent must answer
+# Words in policy text that mean "this depends on who you are".
+# If an employee asks about themselves and the policy contains one of these,
+# the agent must check their record before answering.
+CONDITION_WORDS = ["probation", "permanent", "intern", "full-time", "female", "male"]
+# Which record field decides each condition word.
+# If the policy found mentions the word, that field must be read before answering.
+REQUIRED_FIELDS = {
+    "female": "Gender",
+    "male": "Gender",
+    "probation": "Employment Status",
+    "permanent": "Employment Status",
+    "intern": "Employment Type",
+    "full-time": "Employment Type",
+}
 
+RELATIVE_GAP = 0.15   # keep a result only if it's within this distance of the best match
 
 
 # ---------- Agent settings ----------
