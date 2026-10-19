@@ -460,7 +460,7 @@ Rules:
 #Hands the four tools to the AI. tool_choice="required" means it must call a tool every turn and can’t just chat. 
 # So the only way to finish is Done or Question.    
 
-llm_with_tools = llm.bind_tools(tools,tool_choice="required")
+llm_with_tools = llm.bind_tools(tools,tool_choice="any")
 
 
 # --- Node: llm_call -------------------------------------------------

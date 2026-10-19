@@ -25,7 +25,7 @@ COMPANY_NAME = "Experion Technologies"
 
 # ---------- Model settings ----------
 
-MODEL_NAME = "gpt-5.4-nano"
+MODEL_NAME = "anthropic:claude-haiku-5-5"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 
