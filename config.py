@@ -29,6 +29,15 @@ MODEL_NAME = "anthropic:claude-haiku-5-5"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 
+# ---------- Evaluation settings ----------
+# Models used only by the eval/ scripts (not by Sparc itself).
+# Keep them different from MODEL_NAME so the agent isn't grading or writing its own exam.
+SYNTH_MODEL = "gpt-4o"            # writes synthetic test questions (DeepEval format: plain name)
+JUDGE_MODEL = "anthropic:claude-sonnet-5-5"   # grades Sparc's answers (LangChain format: "provider:model")
+
+
+
+
 # ---------- Search settings ----------
 TOP_K = 2                  # how many policies search_policy_docs returns at most
 MAX_DISTANCE = 0.7         # cosine distance cutoff: lower = stricter (a starting guess, tune it)

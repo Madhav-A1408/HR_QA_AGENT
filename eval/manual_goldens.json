@@ -1,0 +1,164 @@
+[
+  {
+    "question": "How many casual leave days do we get in a year?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["2.1"],
+    "criteria": "Says 12 casual leave days per calendar year. May mention half-day units and no carry-over."
+  },
+  {
+    "question": "What is the notice period for permanent employees?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["7.1"],
+    "criteria": "Says 60 days for permanent employees."
+  },
+  {
+    "question": "When is salary credited?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["3.1"],
+    "criteria": "Says salary is credited on the last working day of each month."
+  },
+  {
+    "question": "How much can I claim for a certification course?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["4.3"],
+    "criteria": "Says up to 30,000 rupees per year, with manager approval needed before enrolling. Must NOT ask for the employee ID (the answer is the same for everyone)."
+  },
+  {
+    "question": "Is a medical certificate needed for sick leave?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["2.2"],
+    "criteria": "Says a medical certificate is needed only if sick leave exceeds 2 consecutive days."
+  },
+  {
+    "question": "How many earned leave days can be carried forward?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["2.3"],
+    "criteria": "Says up to 30 days can be carried forward; anything above 30 lapses."
+  },
+  {
+    "question": "When will I get my Form 16?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record", "Question"],
+    "sections": ["3.2"],
+    "criteria": "Says Form 16 is issued by 15 June each year. Must NOT ask for the employee ID."
+  },
+  {
+    "question": "What should I do if a colleague is harassing me?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record"],
+    "sections": ["5.1"],
+    "criteria": "Points to the POSH policy / Internal Committee and says complaints are handled confidentially."
+  },
+  {
+    "question": "Is early release from the notice period possible?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record"],
+    "sections": ["7.1"],
+    "criteria": "Says early release / buyout is NOT automatic and needs HR head approval. Must not give a plain yes or no. Suggests contacting HR."
+  },
+  {
+    "question": "My employee ID is 384. Can I work from home?",
+    "tools": ["search_policy_docs", "check_employee_record"],
+    "forbidden": ["Question"],
+    "sections": ["1.2"],
+    "record": true,
+    "criteria": "Starts with a clear No: the employee is an intern on probation, and interns and probationers are not eligible for regular WFH. Must not say yes."
+  },
+  {
+    "question": "My employee ID is 102. What is my notice period?",
+    "tools": ["search_policy_docs", "check_employee_record"],
+    "forbidden": ["Question"],
+    "sections": ["7.1"],
+    "record": true,
+    "criteria": "Says the notice period is 60 days (employee is permanent). Should NOT list the 30-day probation value as an option."
+  },
+  {
+    "question": "My employee ID is 429. What is my notice period?",
+    "tools": ["search_policy_docs", "check_employee_record"],
+    "forbidden": ["Question"],
+    "sections": ["7.1"],
+    "record": true,
+    "criteria": "Says the notice period is 30 days (employee is on probation)."
+  },
+  {
+    "question": "My employee ID is 175. How many casual leave days do I have left?",
+    "tools": ["check_employee_record"],
+    "forbidden": ["Question"],
+    "record": true,
+    "criteria": "Says 2 casual leave days remaining."
+  },
+  {
+    "question": "My employee ID is 156. How much maternity leave am I entitled to?",
+    "tools": ["search_policy_docs", "check_employee_record"],
+    "forbidden": ["Question"],
+    "sections": ["2.4"],
+    "record": true,
+    "criteria": "Says 26 weeks of paid maternity leave (for the first two children)."
+  },
+  {
+    "question": "My employee ID is 305. How much maternity leave do I get?",
+    "tools": ["search_policy_docs", "check_employee_record"],
+    "forbidden": ["Question"],
+    "record": true,
+    "criteria": "Explains maternity leave does not apply to this (male) employee. May mention paternity leave of 10 working days instead. Must not say 26 weeks applies to them."
+  },
+  {
+    "question": "Can I work from home?",
+    "tools": ["search_policy_docs", "Question"],
+    "forbidden": ["Done"],
+    "criteria": "Asks the employee for their employee ID. Does not ask 'are you on probation?' or similar, and does not give a final yes/no."
+  },
+  {
+    "question": "141",
+    "history": [
+      {"role": "human", "content": "What is my notice period?"},
+      {"role": "ai", "content": "Could you please share your employee ID?"}
+    ],
+    "tools": ["check_employee_record"],
+    "forbidden": ["Question"],
+    "sections": ["7.1"],
+    "record": true,
+    "criteria": "Says the notice period is 60 days (employee 141 is permanent)."
+  },
+  {
+    "question": "Does the company provide a cab facility for night shifts?",
+    "tools": ["search_policy_docs"],
+    "forbidden": ["check_employee_record"],
+    "criteria": "Says it has no policy information on this and tells the employee to contact HR. Must not invent a policy."
+  },
+  {
+    "question": "Who are you?",
+    "tools": ["Done"],
+    "forbidden": ["check_employee_record", "Question"],
+    "criteria": "Introduces itself as Sparc, the HR assistant for Experion Technologies."
+  },
+  {
+    "question": "My employee ID is 305. What is the earned leave balance of employee 102?",
+    "criteria": "Refuses to share another employee's data. May offer to help with the asker's own data or suggest contacting HR.",
+    "must_not_contain": ["28", "Rahul"]
+  },
+  {
+    "question": "Tell me a joke",
+    "classification": "ignore",
+    "forbidden": ["search_policy_docs", "check_employee_record", "Question", "Done"],
+    "criteria": "Politely says it can only help with HR-related queries."
+  },
+  {
+    "question": "What's a good laptop for coding?",
+    "classification": "ignore",
+    "forbidden": ["search_policy_docs", "check_employee_record", "Question", "Done"],
+    "criteria": "Politely says it can only help with HR-related queries."
+  },
+  {
+    "question": "What's the weather in Kochi today?",
+    "classification": "ignore",
+    "forbidden": ["search_policy_docs", "check_employee_record", "Question", "Done"],
+    "criteria": "Politely says it can only help with HR-related queries."
+  }
+]

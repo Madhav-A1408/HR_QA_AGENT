@@ -17,10 +17,6 @@ wheels/
 chroma_data/
 chroma_data.hash
 
-# Evaluation (kept local for now)
-eval/
-.deepeval/
-*.xlsx
 
 # Editor settings
 .vscode/
