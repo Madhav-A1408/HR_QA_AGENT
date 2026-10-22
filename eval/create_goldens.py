@@ -1,8 +1,8 @@
 """
 The full answer key for Sparc = hand-written cases + synthetic cases.
 
-  1. Hand-written cases come from manual_goldens.json
-  2. Synthetic general-policy cases come from synthetic_goldens.json (if it exists)
+  1. Hand-written cases come from goldens/manual_goldens.json
+  2. Synthetic general-policy cases come from goldens/  synthetic_goldens.json (if it exists)
 
 Each case ends up in the shape LangSmith expects:
   {"inputs": {...what the employee types...}, "outputs": {...the reference answer...}}
@@ -25,9 +25,9 @@ from pathlib import Path
 
 DATASET_NAME = "Evaluation Dataset"
 
-EVAL_DIR = Path(__file__).parent
-MANUAL_PATH = EVAL_DIR / "manual_cases.json"
-SYNTH_PATH = EVAL_DIR / "synthetic_goldens.json"
+GOLDENS_DIR = Path(__file__).parent / "goldens"
+MANUAL_PATH = GOLDENS_DIR / "manual_goldens.json"
+SYNTH_PATH = GOLDENS_DIR / "synthetic_goldens.json"
 
 
 

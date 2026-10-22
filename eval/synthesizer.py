@@ -35,7 +35,7 @@ load_dotenv(ROOT /  ".env")
 
 import config as cfg
 
-OUT_PATH = Path(__file__).parent / "synthetic_goldens.json"  
+OUT_PATH = Path(__file__).parent / "goldens" / "synthetic_goldens.json" 
 
 # Where the finished test cases will be saved.
 
@@ -98,7 +98,9 @@ def synthesize() -> int:
             "policy_title" : policy["title"],
             
         })
-        
+    
+    OUT_PATH.parent.mkdir(exist_ok=True)
+    OUT_PATH.write_text(json.dumps(test_cases, indent=2, ensure_ascii=False), encoding="utf-8")  
     OUT_PATH.write_text(json.dumps(test_cases, indent=2, ensure_ascii=False), encoding="utf-8")
     return len(test_cases)
    
